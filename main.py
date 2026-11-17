@@ -31,13 +31,22 @@ receive 1.0. Early-access pre-release peaks distort release-day curves;
 weak launches (F2P, live-service, slow-burn) are poor analogues for a paid
 single-player AAA launch.
 
-Kernel bandwidths are B1=1.0 and BSHAPE=1.0; G=0.0, CAL=0.7,
-UNLOCK_BOOST=1.5. A leave-one-out residual-bias correction (ROLL_BIAS,
-derived in dev/loo_bias.py from the 12 rolling-midnight comparables,
-shrunk 0.5x) is added to the forecast mean for rolling targets.
+Kernel bandwidths are per hour band (BANDS): early hours h2-8 (1.6, 1.6),
+mid hours h9-16 (0.7, 0.7), late hours h17-24 (1.2, 1.2); CAL=0.7 in all
+bands, G=0.0, UNLOCK_BOOST=1.5. Early/late ratio curves are noisier, so
+wider kernels average more comparables; mid hours are the most stable, so
+tighter kernels discriminate better (tuned in dev/v3_tune.py rounds 1-4:
+bands alone 0.164038 -> 0.156266). A leave-one-out residual-bias correction
+(ROLL_BIAS, re-derived in dev/v3_tune.py from the rolling-midnight
+comparables under v2 weights) is added to the forecast mean for rolling
+targets, with a per-band shrink (BIAS_BANDS = 1.0 early, 0.25 mid, 1.0
+late): mid hours are well determined by the kernel ensemble, so the LOO
+bias — dominated by hard small launches — over-corrects there.
 Coordinator-verified expected dev result on the 4 practice cases:
-practice mean pinball loss 0.164 (baseline 0.387), 90% coverage 0.913,
-typical miss 27.7%. These numbers were not measured in this implementation.
+practice mean pinball loss 0.150441 (v2 0.164038, baseline 0.387097),
+90% coverage 0.946, typical miss 25.3% (per case: p00 0.208204,
+p01 0.135592, p02 0.088731, p03 0.169235). These numbers were not
+measured in this implementation.
 
 Python 3.13, standard library only, no network, deterministic: comparables
 are processed in name order, no randomness, no wall-clock use.
@@ -63,6 +72,11 @@ LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
 Z = (-1.645, -0.674, 0.0, 0.674, 1.645)
 
 # Tuned constants (see module docstring).
+# Per-hour-band (B1, BSHAPE, CAL): early h2-8, mid h9-16, late h17-24.
+BANDS = ((1.6, 1.6, 0.7), (0.7, 0.7, 0.7), (1.2, 1.2, 0.7))
+# v2 scalar defaults (B1=1.0, BSHAPE=1.0, CAL=0.7, BIAS_SHRINK=0.5) are
+# kept for the dev tune harness, whose baseline reproduces v2; production
+# uses BANDS / BIAS_BANDS below.
 B1 = 1.0
 BSHAPE = 1.0
 TIER_WEIGHTS = {"comparable": 1.0, "early-access-contaminated": 0.25, "weak": 0.25}
@@ -73,13 +87,15 @@ UNLOCK_BOOST = 1.5
 CONSOLE_ONLY_FACTOR = 1.5
 MIN_SD = 0.10
 # Leave-one-out residual bias (mean true-minus-forecast log-ratio per hour
-# over the 12 rolling-midnight comparables; see dev/loo_bias.py). Added to
-# the forecast mean for rolling targets only, shrunk 0.5x.
+# over the rolling-midnight comparables, re-derived in dev/v3_tune.py
+# under v2 weights). Added to the forecast mean for rolling targets only,
+# scaled per hour band by BIAS_BANDS (early, mid, late).
 BIAS_SHRINK = 0.5
-ROLL_BIAS = {2: -0.05, 3: -0.06, 4: -0.04, 5: 0.00, 6: 0.13, 7: 0.18,
-             8: 0.16, 9: 0.13, 10: 0.13, 11: 0.13, 12: 0.12, 13: 0.13,
-             14: 0.13, 15: 0.11, 16: 0.09, 17: 0.08, 18: 0.07, 19: 0.03,
-             20: 0.00, 21: -0.01, 22: -0.01, 23: 0.00, 24: 0.00}
+BIAS_BANDS = (1.0, 0.25, 1.0)
+ROLL_BIAS = {2: -0.051, 3: -0.058, 4: -0.042, 5: -0.042, 6: 0.069, 7: 0.118,
+             8: 0.121, 9: 0.112, 10: 0.124, 11: 0.107, 12: 0.109, 13: 0.130,
+             14: 0.147, 15: 0.124, 16: 0.096, 17: 0.101, 18: 0.092, 19: 0.050,
+             20: 0.022, 21: 0.019, 22: 0.024, 23: 0.023, 24: 0.016}
 
 
 def stamp(s):
@@ -188,12 +204,14 @@ def predict(prepared):
     p1, comps, target_rolling = prepared
     rows = []
     for h in range(2, 25):
+        band = 0 if h <= 8 else 1 if h <= 16 else 2
+        b1, bs, cal = BANDS[band]
         present = []
         for d1, dshape, factor, ratios, rolling, tier in comps:
             if h not in ratios:
                 continue
             boost = UNLOCK_BOOST if (target_rolling and rolling) else 1.0
-            logw = (-0.5 * (d1 / B1) ** 2 - 0.5 * (dshape / BSHAPE) ** 2
+            logw = (-0.5 * (d1 / b1) ** 2 - 0.5 * (dshape / bs) ** 2
                     + math.log(factor * boost) + math.log(TIER_WEIGHTS.get(tier, 1.0)))
             present.append((ratios[h], logw))
         if present:
@@ -205,8 +223,8 @@ def predict(prepared):
         else:  # No comparable covers this hour: fall back to persistence.
             mean, sd = 0.0, 1.0
         if target_rolling:
-            mean += BIAS_SHRINK * ROLL_BIAS.get(h, 0.0)
-        spread = math.sqrt(max(sd, MIN_SD) ** 2 + (G * math.sqrt(h - 1)) ** 2) * CAL
+            mean += BIAS_BANDS[band] * ROLL_BIAS.get(h, 0.0)
+        spread = math.sqrt(max(sd, MIN_SD) ** 2 + (G * math.sqrt(h - 1)) ** 2) * cal
         q = []
         for z in Z:
             value = p1 * math.exp(mean + z * spread)
