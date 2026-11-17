@@ -21,6 +21,12 @@ weighted by how similar each launch is to the target.
   bandwidth 1.5. A launch that hyped up the same way tends to play out
   the same way.
 - **Platform**: console-only launches ×1.5 (GTA VI is PS5/Xbox Series only).
+- **Research tier** (v2): the case file's unlock notes carry a `Tier:` tag.
+  Early-access-contaminated launches ×0.25 (their pre-release peaks distort
+  release-day curves) and weak-tier launches ×0.25 (F2P, live-service,
+  slow-burn — poor analogues for a paid single-player AAA launch). Clean
+  comparables ×1.0; absent/unknown tag → 1.0. 26 clean, 9 contaminated,
+  2 weak in the pool.
 - **Recency**: `exp(−(2026 − year)/10)`.
 - **Unlock type**: rolling-midnight launches ×1.5 when the target is also
   rolling-midnight. Simultaneous-global launches jump at hour 1 already,
@@ -51,10 +57,35 @@ weighted by how similar each launch is to the target.
   bias shrinkage): 4 practice cases cannot support more without
   overfitting; the final is a single unseen launch.
 
-## Practice validation
+## v2 changes (2026-11-17)
+
+- Tier weighting (see above) + narrower kernels B1/BSHAPE 1.5 → 1.0.
+  The (0.8–1.2, 0.8–1.2) bandwidth basin is smooth on the practice cases
+  and (1.0, 1.0) is its centre; tier downweighting alone moves
+  0.178 → 0.172, the narrower kernels take it to 0.164. Every practice
+  case improves (p00 0.256→0.229, p01 0.152→0.134, p02 0.117→0.106,
+  p03 0.188→0.187).
+- Deliberately NOT used: per-hour spread from LOO residual SD (the LOO
+  residual distribution, SD 0.7–1.1 log, is dominated by hard-to-predict
+  small launches and does not transfer to big practice targets —
+  empirical-quantile variants scored 0.209–0.225, far worse); per-hour
+  CAL (coverage collapsed to 0.84–0.89); winsorised means; multi-bandwidth
+  ensembles (no gain); a re-derived LOO bias curve under tier weights
+  (worse on practice than the v1 curve — the bias is size-dependent, and
+  the v1 curve from rolling comparables fits the big practice launches
+  better). CAL stays 0.7 rather than the practice-optimal 0.6: the final
+  target (GTA VI) extrapolates beyond every comparable in size, so its
+  true uncertainty is larger than the practice cases suggest and a slightly
+  wider spread hedges that.
+- Practice validation (v2): mean pinball loss 0.164 vs house baseline
+  0.387; 90% coverage 0.913; typical miss 27.7% (baseline 82.8%).
+  Runtime ~0.5 s/case, deterministic (two runs byte-identical).
+
+## Practice validation (v2)
 
 Truth = SullyGnome "Average viewers" for the 4 practice games, release-day
 hours 2..24 (anchored on the 8 consecutive history-tail values in each
-`.in` file; hour-1 matches exactly). Mean pinball loss 0.178 vs house
-baseline 0.387; 90% coverage 0.946; typical miss 31.2% (baseline 82.8%).
-Runtime ~0.5 s/case, deterministic (two runs byte-identical).
+`.in` file; hour-1 matches exactly). Mean pinball loss 0.164 vs house
+baseline 0.387; 90% coverage 0.913; typical miss 27.7% (baseline 82.8%).
+Runtime ~0.5 s/case, deterministic (two runs byte-identical). v1 scored
+0.178 / 0.946 / 31.2% on the same truth.

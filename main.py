@@ -8,7 +8,7 @@ Model (per hour h, all in log space):
   - For each comparable, r_h = ln(viewers_h / viewers_hour1) on its release day.
   - Kernel weight per comparable:
         w = exp(-0.5*(d1/B1)^2) * exp(-0.5*(dshape/BSHAPE)^2)
-            * platform_factor * recency_factor * unlock_factor
+            * platform_factor * recency_factor * unlock_factor * tier_weight
     d1     = |ln(comp hour-1) - ln(target hour-1)|   (similar launch size)
     dshape = RMS distance between the target's and the comparable's centred
              pre-launch daily log-mean curves (similar pre-launch hype shape)
@@ -25,16 +25,19 @@ Model (per hour h, all in log space):
     release day (its day_start is the 2026-08-27 premiere), so it is excluded
     from the ratio ensemble; no ratios are invented for it.
 
-Constants were tuned on the 4 practice cases against SullyGnome truth
-(dev/truth/truth.json; starter baseline reproduces 0.387 / 82.8% / 0.783
-exactly on this truth, so it is the house's grading data):
-  B1=1.5, BSHAPE=1.5, G=0.0, CAL=0.7, UNLOCK_BOOST=1.5
-  -> practice mean pinball loss 0.183 (baseline 0.387), 90% coverage 0.935.
-A leave-one-out residual-bias correction (ROLL_BIAS, derived in
-dev/loo_bias.py from the 12 rolling-midnight comparables, shrunk 0.5x)
-is added to the forecast mean for rolling targets: the ensemble
-under-forecasts rolling launches mid-day (h6-h16) by +0.11..+0.18 log.
-  -> practice mean pinball loss 0.178, 90% coverage 0.946.
+Tier weighting uses unlock-note tags: comparable = 1.0,
+early-access-contaminated = 0.25, weak = 0.25; absent or unknown tags
+receive 1.0. Early-access pre-release peaks distort release-day curves;
+weak launches (F2P, live-service, slow-burn) are poor analogues for a paid
+single-player AAA launch.
+
+Kernel bandwidths are B1=1.0 and BSHAPE=1.0; G=0.0, CAL=0.7,
+UNLOCK_BOOST=1.5. A leave-one-out residual-bias correction (ROLL_BIAS,
+derived in dev/loo_bias.py from the 12 rolling-midnight comparables,
+shrunk 0.5x) is added to the forecast mean for rolling targets.
+Coordinator-verified expected dev result on the 4 practice cases:
+practice mean pinball loss 0.164 (baseline 0.387), 90% coverage 0.913,
+typical miss 27.7%. These numbers were not measured in this implementation.
 
 Python 3.13, standard library only, no network, deterministic: comparables
 are processed in name order, no randomness, no wall-clock use.
@@ -43,6 +46,7 @@ are processed in name order, no randomness, no wall-clock use.
 import json
 import math
 import os
+import re
 import statistics
 import sys
 from datetime import datetime
@@ -59,8 +63,10 @@ LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
 Z = (-1.645, -0.674, 0.0, 0.674, 1.645)
 
 # Tuned constants (see module docstring).
-B1 = 1.5
-BSHAPE = 1.5
+B1 = 1.0
+BSHAPE = 1.0
+TIER_WEIGHTS = {"comparable": 1.0, "early-access-contaminated": 0.25, "weak": 0.25}
+TIER_RE = re.compile(r"Tier:\s*([a-z\-]+)")
 G = 0.0
 CAL = 0.7
 UNLOCK_BOOST = 1.5
@@ -129,12 +135,13 @@ def prepare(case):
     """Extract the target's hour-1 print, pre-launch shape, and comparables.
 
     Returns (p1, comps, target_rolling) where each comp is
-    (d1, dshape, factor, ratios, rolling):
+    (d1, dshape, factor, ratios, rolling, tier):
       d1     log distance between the comparable's and the target's hour-1
       dshape pre-launch shape distance (median of the others if <5 common days)
       factor platform x recency multiplier
       ratios {h: ln(viewers_h / viewers_1)} for h = 2..24
       rolling whether the comparable unlocked by rolling midnight local
+      tier   unlock-note Tier tag, defaulting to comparable
     """
     known = sorted(case.get("known", []), key=lambda k: k["hour"])
     p1 = max(1, known[0]["viewers"]) if known else 1
@@ -160,25 +167,34 @@ def prepare(case):
                 if len(common) >= 5 else None)
         factor = ((CONSOLE_ONLY_FACTOR if "PC" not in c.get("platforms", "").upper() else 1.0)
                   * math.exp(-(2026 - int(c["day_start"][:4])) / 10))
+        tier_match = TIER_RE.search(c.get("unlock") or "")
+        tier = tier_match.group(1) if tier_match else "comparable"
         comps.append((abs(math.log(v1) - math.log(p1)), dist, factor, ratios,
-                      is_rolling(c.get("unlock", ""))))
+                      is_rolling(c.get("unlock", "")), tier))
     fallback = statistics.median([c[1] for c in comps if c[1] is not None] or [BSHAPE])
-    comps = [(a, fallback if b is None else b, f, r, roll) for a, b, f, r, roll in comps]
+    comps = [(a, fallback if b is None else b, f, r, roll, tier)
+             for a, b, f, r, roll, tier in comps]
     return p1, comps, target_rolling
 
 
 def predict(prepared):
-    """Kernel-weighted ensemble forecast: {"hours": [{"hour": h, "q": [...]}]}."""
+    """Kernel-weighted ensemble forecast: {"hours": [{"hour": h, "q": [...]}]}.
+
+    Per hour, each comparable contributes its log-ratio with log-weight
+    -0.5*(d1/B1)^2 - 0.5*(dshape/BSHAPE)^2 + ln(factor * unlock_boost
+    * tier_weight); the median is the weighted mean of the ratios, the
+    spread the weighted std (floored, x CAL), quantiles via normal z.
+    """
     p1, comps, target_rolling = prepared
     rows = []
     for h in range(2, 25):
         present = []
-        for d1, dshape, factor, ratios, rolling in comps:
+        for d1, dshape, factor, ratios, rolling, tier in comps:
             if h not in ratios:
                 continue
             boost = UNLOCK_BOOST if (target_rolling and rolling) else 1.0
             logw = (-0.5 * (d1 / B1) ** 2 - 0.5 * (dshape / BSHAPE) ** 2
-                    + math.log(factor * boost))
+                    + math.log(factor * boost) + math.log(TIER_WEIGHTS.get(tier, 1.0)))
             present.append((ratios[h], logw))
         if present:
             peak = max(w for _, w in present)
