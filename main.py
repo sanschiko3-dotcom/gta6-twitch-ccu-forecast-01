@@ -32,21 +32,31 @@ weak launches (F2P, live-service, slow-burn) are poor analogues for a paid
 single-player AAA launch.
 
 Kernel bandwidths are per hour band (BANDS): early hours h2-8 (1.6, 1.6),
-mid hours h9-16 (0.7, 0.7), late hours h17-24 (1.2, 1.2); CAL=0.7 in all
-bands, G=0.0, UNLOCK_BOOST=1.5. Early/late ratio curves are noisier, so
-wider kernels average more comparables; mid hours are the most stable, so
-tighter kernels discriminate better (tuned in dev/v3_tune.py rounds 1-4:
-bands alone 0.164038 -> 0.156266). A leave-one-out residual-bias correction
+mid hours h9-16 (0.7, 0.7), late hours h17-24 (1.2, 1.2); CAL per band is
+0.7 early, 0.6 mid, 0.45 late, G=0.0, UNLOCK_BOOST=1.5. Early/late ratio
+curves are noisier, so wider kernels average more comparables; mid hours
+are the most stable, so tighter kernels discriminate better (tuned in
+dev/v3_tune.py rounds 1-4: bands alone 0.164038 -> 0.156266). The ensemble
+spread is over-dispersed, most of all late: on the 4 practice cases the
+mean |median log error| / mean spread is 0.623 early, 0.666 mid, 0.468
+late (0.8 would be calibrated for a normal), so the late band — where
+launch curves settle toward a common decay shape — gets the narrowest
+CAL (0.45), mid 0.6, early stays 0.7 (tuned in dev/v4_tune.py rounds
+1-4: CAL alone 0.150441 -> 0.148062 late-0.6; combined with the faster
+recency decay below 0.142629). Recency decay is 5 e-folding years
+(v4: recent launches are better analogues as the streaming landscape
+moves fast; 5 beats 10 and 20 in dev/v4_tune.py round 1 and stacks with
+the CAL change). A leave-one-out residual-bias correction
 (ROLL_BIAS, re-derived in dev/v3_tune.py from the rolling-midnight
 comparables under v2 weights) is added to the forecast mean for rolling
 targets, with a per-band shrink (BIAS_BANDS = 1.0 early, 0.25 mid, 1.0
 late): mid hours are well determined by the kernel ensemble, so the LOO
 bias — dominated by hard small launches — over-corrects there.
 Coordinator-verified expected dev result on the 4 practice cases:
-practice mean pinball loss 0.150441 (v2 0.164038, baseline 0.387097),
-90% coverage 0.946, typical miss 25.3% (per case: p00 0.208204,
-p01 0.135592, p02 0.088731, p03 0.169235). These numbers were not
-measured in this implementation.
+practice mean pinball loss 0.142629 (v3 0.150441, v2 0.164038,
+baseline 0.387097), 90% coverage 0.946, typical miss 24.75%
+(per case: p00 0.203434, p01 0.122728, p02 0.082088, p03 0.162265).
+These numbers were not measured in this implementation.
 
 Python 3.13, standard library only, no network, deterministic: comparables
 are processed in name order, no randomness, no wall-clock use.
@@ -73,7 +83,9 @@ Z = (-1.645, -0.674, 0.0, 0.674, 1.645)
 
 # Tuned constants (see module docstring).
 # Per-hour-band (B1, BSHAPE, CAL): early h2-8, mid h9-16, late h17-24.
-BANDS = ((1.6, 1.6, 0.7), (0.7, 0.7, 0.7), (1.2, 1.2, 0.7))
+# v4: CAL narrows by band (0.7 / 0.6 / 0.45) — the ensemble spread is
+# over-dispersed, most of all late (see module docstring).
+BANDS = ((1.6, 1.6, 0.7), (0.7, 0.7, 0.6), (1.2, 1.2, 0.45))
 # v2 scalar defaults (B1=1.0, BSHAPE=1.0, CAL=0.7, BIAS_SHRINK=0.5) are
 # kept for the dev tune harness, whose baseline reproduces v2; production
 # uses BANDS / BIAS_BANDS below.
@@ -182,7 +194,7 @@ def prepare(case):
         dist = (math.sqrt(sum((target[d] - shape[d]) ** 2 for d in common) / len(common))
                 if len(common) >= 5 else None)
         factor = ((CONSOLE_ONLY_FACTOR if "PC" not in c.get("platforms", "").upper() else 1.0)
-                  * math.exp(-(2026 - int(c["day_start"][:4])) / 10))
+                  * math.exp(-(2026 - int(c["day_start"][:4])) / 5))
         tier_match = TIER_RE.search(c.get("unlock") or "")
         tier = tier_match.group(1) if tier_match else "comparable"
         comps.append((abs(math.log(v1) - math.log(p1)), dist, factor, ratios,

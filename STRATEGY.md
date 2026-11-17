@@ -122,3 +122,30 @@ Runtime ~0.5 s/case, deterministic (two runs byte-identical). v1 scored
   (per case: p00 0.208, p01 0.136, p02 0.089, p03 0.169 — 3 of 4 improve
   substantially, only p01 regresses by 0.002). Runtime ~0.5 s/case,
   deterministic (two runs byte-identical).
+
+## v4 changes (2026-11-18)
+
+- Per-band CAL: early 0.7 (unchanged), mid 0.7 -> 0.6, late 0.7 -> 0.45.
+  The ensemble spread is over-dispersed, most of all late: on the 4
+  practice cases mean |median log error| / mean spread is 0.623 early,
+  0.666 mid, 0.468 late (0.8 would be calibrated for a normal), so the
+  late band — where launch curves settle toward a common decay shape —
+  gets the narrowest CAL. Late 0.4 scores a touch better on dev but
+  drops coverage to 0.913, so 0.45 is the stop point.
+- Recency decay: 10 e-folding years -> 5. Recent launches are better
+  analogues as the streaming landscape moves fast; 5 beats 10 and 20
+  on dev and stacks with the CAL change.
+- Deliberately NOT used: weighted median / blend / trimmed mean (all
+  worse — the weighted mean stays), Laplace/Epanechnikov kernels,
+  MAD spread, growth term, tier re-weighting (all measured no gain or
+  worse). Full experiment record: dev/v4_results.md in the build
+  workspace.
+- Practice validation (v4): mean pinball loss **0.142629** vs v3 0.150441
+  and house baseline 0.387097; 90% coverage 0.946; typical miss 24.7%
+  (per case: p00 0.203, p01 0.123, p02 0.082, p03 0.162 — all 4 improve
+  on v3, coverage unchanged). Runtime ~0.4 s/case, deterministic (two
+  runs byte-identical).
+- Build note: Codex/gpt-6.1-sol was broken this session (relay rejects
+  Responses tool calls for it since ~05:10 WIB 2026-11-18); v4 was built
+  by the coordinator (Muse) directly — tune harness, all scoring rounds,
+  and the production edit. See dev/v4_results.md for the diagnosis.
